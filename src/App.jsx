@@ -266,7 +266,7 @@ export default function HaikuCorrector() {
     if(!texto.trim())return;
     setCargando(true);setResultado(null);setError("");
     try{
-      const res=await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-5",max_tokens:2000,system:SYSTEM_PROMPT,messages:[{role:"user",content:`Analiza este haiku:\n\n${texto}`}]})});
+      const res=await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-5",max_tokens:3000,system:SYSTEM_PROMPT,messages:[{role:"user",content:`Analiza este haiku:\n\n${texto}`}]})});
       const data=await res.json();
       if(!res.ok){setError(`Error: ${data.error?.message||JSON.stringify(data)}`);return;}
       const raw = data.content?.find(b=>b.type==="text")?.text || "";
@@ -303,7 +303,8 @@ export default function HaikuCorrector() {
         while (brackets > 0) { repair += "]"; brackets--; }
         while (braces > 0)   { repair += "}"; braces--; }
         try { parsed = JSON.parse(repair); }
-        catch (e2) { setError("El maestro no pudo completar el análisis. Inténtalo de nuevo."); return; }
+        catch (e2) { setError("JSON inválido: " + e2.message + " | Raw: " + repair.slice(0, 200));
+ return; }
       }
       const str = v => (typeof v === "string" ? v : typeof v === "object" && v !== null ? JSON.stringify(v) : String(v ?? ""));
       const normaliza = (p) => {
