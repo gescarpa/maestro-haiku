@@ -303,8 +303,7 @@ export default function HaikuCorrector() {
         while (brackets > 0) { repair += "]"; brackets--; }
         while (braces > 0)   { repair += "}"; braces--; }
         try { parsed = JSON.parse(repair); }
-        catch (e2) { setError("JSON inválido: " + e2.message + " | Raw: " + repair.slice(0, 200));
- return; }
+        catch (e2) { setError("El maestro no pudo completar el análisis. Inténtalo de nuevo."); return; }
       }
       const str = v => (typeof v === "string" ? v : typeof v === "object" && v !== null ? JSON.stringify(v) : String(v ?? ""));
       const normaliza = (p) => {
