@@ -266,7 +266,7 @@ export default function HaikuCorrector() {
     if(!texto.trim())return;
     setCargando(true);setResultado(null);setError("");
     try{
-      const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-5",max_tokens:2000,system:SYSTEM_PROMPT,messages:[{role:"user",content:`Analiza este haiku:\n\n${texto}`}]})});
+      const res=await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-5",max_tokens:2000,system:SYSTEM_PROMPT,messages:[{role:"user",content:`Analiza este haiku:\n\n${texto}`}]})});
       const data=await res.json();
       if(!res.ok){setError(`Error: ${data.error?.message||JSON.stringify(data)}`);return;}
       const raw = data.content?.find(b=>b.type==="text")?.text || "";
