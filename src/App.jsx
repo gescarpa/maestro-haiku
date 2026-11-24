@@ -266,15 +266,35 @@ export default function HaikuCorrector() {
     if(!texto.trim())return;
     setCargando(true);setResultado(null);setError("");
     try{
-      const res=await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-5",max_tokens:3000,system:SYSTEM_PROMPT,messages:[{role:"user",content:`Analiza este haiku:\n\n${texto}`}]})});
+      const res=await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-5",max_tokens:4500,system:SYSTEM_PROMPT,messages:[{role:"user",content:`Analiza este haiku:\n\n${texto}`}]})});
       const data=await res.json();
       if(!res.ok){setError(`Error: ${data.error?.message||JSON.stringify(data)}`);return;}
       const raw = data.content?.find(b=>b.type==="text")?.text || "";
       const match = raw.match(/\{[\s\S]*\}/);
       if (!match) { setError("Respuesta inválida. Inténtalo de nuevo."); return; }
-      let json = match[0]
-        .replace(/[\u0000-\u001F\u007F]/g, m => ["\n","\r","\t"].includes(m) ? m : "")
-        .replace(/,\s*([}\]])/g, "$1");
+      // Escapa saltos de línea/tabuladores reales DENTRO de strings (JSON no los admite,
+      // p. ej. en haiku_corregido) y descarta el resto de caracteres de control.
+      const sanea = (s) => {
+        let out = "", inStr = false, esc = false;
+        for (const ch of s) {
+          if (inStr) {
+            if (esc) { out += ch; esc = false; continue; }
+            if (ch === "\\") { out += ch; esc = true; continue; }
+            if (ch === '"') { out += ch; inStr = false; continue; }
+            if (ch === "\n") { out += "\\n"; continue; }
+            if (ch === "\r") { continue; }
+            if (ch === "\t") { out += "\\t"; continue; }
+            if (/[\u0000-\u001F\u007F]/.test(ch)) continue;
+            out += ch;
+          } else {
+            if (ch === '"') inStr = true;
+            if (/[\u0000-\u001F\u007F]/.test(ch) && !"\n\r\t".includes(ch)) continue;
+            out += ch;
+          }
+        }
+        return out;
+      };
+      let json = sanea(match[0]).replace(/,\s*([}\]])/g, "$1");
       // Intenta parsear; si falla, repara el JSON truncado
       let parsed;
       try { parsed = JSON.parse(json); }
