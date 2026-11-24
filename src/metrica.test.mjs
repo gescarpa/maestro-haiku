@@ -82,3 +82,9 @@ test("validación de versión sugerida", () => {
   const mala = validaCorreccion("lago de otoño\nsu superficie inmóvil refleja\nel cielo");
   assert.equal(mala.ok, false);
 });
+
+test("una sugerencia idéntica al original se rechaza", () => {
+  const orig = "duda de otoño.\nse ha detenido el lago\no ha sido el tiempo?";
+  const v = validaCorreccion("duda de otoño\nse ha detenido el lago\no ha sido el tiempo", orig);
+  assert.equal(v.ok, false);
+});

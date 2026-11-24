@@ -343,7 +343,7 @@ export default function HaikuCorrector() {
       // La versión sugerida se verifica por código; si no mide 5-7-5 o rima, se pide otra (máx. 2 veces).
       let corregido = textoCorregido(parsed.haiku_corregido);
       if (corregido) {
-        let v = validaCorreccion(corregido);
+        let v = validaCorreccion(corregido, texto);
         for (let i = 0; i < 2 && !v.ok; i++) {
           try {
             const r = await llamarModelo({
@@ -354,7 +354,7 @@ export default function HaikuCorrector() {
             const nuevo = textoCorregido(r?.haiku_corregido);
             if (!nuevo) break;
             corregido = nuevo;
-            v = validaCorreccion(nuevo);
+            v = validaCorreccion(nuevo, texto);
           } catch { break; }
         }
         if (!v.ok) corregido = null;

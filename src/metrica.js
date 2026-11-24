@@ -263,9 +263,14 @@ export function datosParaModelo(an) {
 }
 
 // Valida una versión sugerida: 3 versos, 5-7-5 con las sinalefas habituales y sin rima.
-export function validaCorreccion(texto) {
+const soloLetras = (t) => String(t).toLowerCase().replace(/[^\p{L}]/gu, "");
+
+export function validaCorreccion(texto, original = "") {
   const an = analizarHaiku(texto);
   const problemas = [];
+  if (original && soloLetras(texto) === soloLetras(original)) {
+    problemas.push("es igual al original (solo cambia la puntuación): reescríbela de verdad");
+  }
   if (an.nVersos !== 3) problemas.push(`tiene ${an.nVersos} versos, debe tener 3`);
   an.versos.forEach((v, i) => {
     if (v.porDefecto !== v.esperadas) problemas.push(`verso ${i + 1} «${v.verso}» mide ${v.porDefecto} sílabas, debe medir ${v.esperadas}`);
