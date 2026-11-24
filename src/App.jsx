@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { analizarHaiku, resumenMetrico, puntuar, datosParaModelo, validaCorreccion } from "./metrica.js";
 
 const CYCLE_MS = 12 * 60 * 1000;
 
@@ -177,48 +178,110 @@ const SEASON_POOL = {
   ],
 };
 
-const SYSTEM_PROMPT = `Eres un maestro del haiku japonés clásico. Analizas haikus en español con rigor absoluto.
+const SYSTEM_PROMPT = `Eres un maestro del haiku japonés clásico. Analizas haikus en español con rigor.
 
-REGLAS DEL HAIKU:
-1. MÉTRICA 5-7-5. Cuenta sílabas con estas reglas SIN EXCEPCIÓN:
-   - Sinalefa: vocal final + vocal inicial siguiente PUEDEN fusionarse (licencia optativa). Busca la lectura que cuadre 5-7-5.
-   - Verso agudo (última palabra acentuada en última sílaba: "calor", "café", "canción", "aquí", "hoy"): suma 1 al total. Ej: "ha-ce ca-lor" = 4 sílabas + 1 (agudo) = 5 ✓
-   - Verso esdrújulo (acento en antepenúltima: "pájaro", "música", "cálido"): resta 1 al total. Ej: "canta un pájaro" = 6 - 1 = 5 ✓
-   - Verso llano (acento en penúltima, lo habitual): cuenta normal, sin ajuste.
-2. Sin yo/autor: no primera persona.
-3. Kigo: referencia estacional clara.
-4. Sin rima asonante ni consonante entre versos.
-5. Sin metáfora: todo literal y sensorial.
+IMPORTANTE: el programa ya ha calculado con exactitud las sílabas (sinalefas y acento final incluidos) y la rima, y te las da como "DATOS CALCULADOS". Son correctos: NO los recalcules, NO los contradigas y NO menciones sílabas, métrica, sinalefas ni rima en "aciertos", "errores" ni "nota_maestro" (eso ya se muestra aparte). Tú juzgas solo lo literario:
+1. Sin yo/autor: no primera persona (verbos o posesivos en primera persona: "pienso", "mi", "me").
+2. Kigo: referencia estacional clara.
+3. Sin metáfora: todo literal y sensorial (sin comparaciones ni personificaciones).
+4. Imagen, economía verbal, corte o contraste entre imágenes, tono.
 
-PARA haiku_corregido — PROCESO OBLIGATORIO:
-El proceso de verificación es INTERNO y NUNCA aparece en la respuesta JSON.
-Verifica mentalmente cada verso candidato antes de incluirlo:
-  a) Cuenta sílabas brutas
-  b) Aplica sinalefas si las hay
-  c) Ajusta por acento final (+1 agudo, -1 esdrújulo, 0 llano)
-  d) ¿Es exactamente 5 o 7? Si NO → descarta y prueba otro verso
-Solo cuando los tres versos cumplan 5-7-5 escribe haiku_corregido como string simple con saltos de línea, sin campos extra, sin verificaciones, sin notas. Exactamente así:
-  "haiku_corregido": "verso uno\nverso dos\nverso tres"
-Si no encuentras corrección válida, escribe:
-  "haiku_corregido": null
+haiku_corregido: si el haiku tiene algún fallo (métrica o rima según los datos, yo, falta de kigo, metáfora), propón una versión mejorada que conserve su imagen y cumpla 5-7-5 (cuenta con sinalefas; verso agudo suma 1, esdrújulo resta 1), sin rima entre versos, sin yo, con kigo y sin metáfora. El programa verificará la métrica y, si no cumple, te pedirá otra versión. Si el haiku ya es correcto en todo, pon null.
 
-Responde ÚNICAMENTE con JSON válido, sin texto, sin markdown:
+Responde ÚNICAMENTE con JSON válido, sin texto ni markdown. En los textos usa \\n escapado, nunca saltos de línea reales:
 {
-  "puntuacion": 8,
-  "versos": [
-    {"verso": "texto", "silabas_contadas": 5, "silabas_esperadas": 5, "correcto": true, "desglose": "síl-a-bas con ajuste explicado"},
-    {"verso": "texto", "silabas_contadas": 7, "silabas_esperadas": 7, "correcto": true, "desglose": "síl-a-bas con ajuste explicado"},
-    {"verso": "texto", "silabas_contadas": 5, "silabas_esperadas": 5, "correcto": true, "desglose": "síl-a-bas con ajuste explicado"}
-  ],
   "aciertos": ["..."],
   "errores": ["..."],
   "tiene_kigo": true,
   "tiene_yo": false,
-  "tiene_rima": false,
   "tiene_metafora": false,
   "nota_maestro": "...",
   "haiku_corregido": null
 }`;
+
+const SYSTEM_REINTENTO = 'Eres un poeta de haiku en español. Responde ÚNICAMENTE con JSON válido: {"haiku_corregido": "verso 1\\nverso 2\\nverso 3"} (usa \\n escapado, sin saltos de línea reales).';
+
+// ── Lectura robusta del JSON que devuelve el modelo ──
+// Escapa saltos de línea/tabuladores reales DENTRO de strings (JSON no los admite)
+// y descarta el resto de caracteres de control.
+function sanea(s) {
+  let out = "", inStr = false, esc = false;
+  for (const ch of s) {
+    if (inStr) {
+      if (esc) { out += ch; esc = false; continue; }
+      if (ch === "\\") { out += ch; esc = true; continue; }
+      if (ch === '"') { out += ch; inStr = false; continue; }
+      if (ch === "\n") { out += "\\n"; continue; }
+      if (ch === "\r") { continue; }
+      if (ch === "\t") { out += "\\t"; continue; }
+      if (/[\u0000-\u001F\u007F]/.test(ch)) continue;
+      out += ch;
+    } else {
+      if (ch === '"') inStr = true;
+      if (/[\u0000-\u001F\u007F]/.test(ch) && !"\n\r\t".includes(ch)) continue;
+      out += ch;
+    }
+  }
+  return out;
+}
+
+function parseJsonModelo(raw) {
+  const i0 = raw.indexOf("{");
+  if (i0 < 0) return null;
+  const i1 = raw.lastIndexOf("}");
+  const cuerpo = i1 > i0 ? raw.slice(i0, i1 + 1) : raw.slice(i0); // sin "}" = respuesta cortada
+  const json = sanea(cuerpo).replace(/,\s*([}\]])/g, "$1");
+  try { return JSON.parse(json); } catch { /* intenta reparar un JSON truncado */ }
+  let repair = json, braces = 0, brackets = 0, inStr = false, esc = false;
+  for (let i = 0; i < repair.length; i++) {
+    const ch = repair[i];
+    if (esc) { esc = false; continue; }
+    if (ch === "\\") { esc = true; continue; }
+    if (ch === '"') { inStr = !inStr; continue; }
+    if (!inStr) {
+      if (ch === "{") braces++;
+      else if (ch === "}") braces--;
+      else if (ch === "[") brackets++;
+      else if (ch === "]") brackets--;
+    }
+  }
+  if (inStr) repair += '"';
+  repair = repair.replace(/,?\s*"[^"]*"\s*:\s*$/, "").replace(/,\s*$/, ""); // clave sin valor al cortar
+  while (brackets-- > 0) repair += "]";
+  while (braces-- > 0) repair += "}";
+  try { return JSON.parse(repair); } catch { return null; }
+}
+
+async function llamarModelo({ system, user, max_tokens }) {
+  const res = await fetch("/api/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model: "claude-sonnet-4-5", max_tokens, system, messages: [{ role: "user", content: user }] }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error?.message || JSON.stringify(data));
+  const raw = data.content?.find(b => b.type === "text")?.text || "";
+  return parseJsonModelo(raw);
+}
+
+const str = v => (typeof v === "string" ? v : typeof v === "object" && v !== null ? JSON.stringify(v) : String(v ?? ""));
+const toStrArr = a => Array.isArray(a) ? a.map(str) : (a ? [str(a)] : []);
+
+function textoCorregido(h) {
+  if (!h) return null;
+  if (typeof h === "string") return h.replace(/\\n/g, "\n").trim() || null;
+  if (typeof h === "object") {
+    if (h.texto)  return str(h.texto);
+    if (h.haiku)  return str(h.haiku);
+    if (h.result) return str(h.result);
+    if (h.verso1 || h.verso2 || h.verso3) return [h.verso1, h.verso2, h.verso3].filter(Boolean).map(str).join("\n");
+    if (h.v1 || h.v2 || h.v3) return [h.v1, h.v2, h.v3].filter(Boolean).map(str).join("\n");
+  }
+  return null;
+}
+
+// Aciertos/errores del modelo que hablan de métrica o rima se descartan: eso lo dice el código.
+const SOBRE_METRICA = /sílab|métric|sinalef|dialef|5-7-5|\brima|asonan|consonan/i;
 
 const FRASES_CARGA = ["El maestro medita...","Contando sílabas...","Buscando el kigo...","Escuchando el silencio...","Leyendo entre versos..."];
 function pickRandom(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
@@ -266,120 +329,51 @@ export default function HaikuCorrector() {
     if(!texto.trim())return;
     setCargando(true);setResultado(null);setError("");
     try{
-      const res=await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-5",max_tokens:4500,system:SYSTEM_PROMPT,messages:[{role:"user",content:`Analiza este haiku:\n\n${texto}`}]})});
-      const data=await res.json();
-      if(!res.ok){setError(`Error: ${data.error?.message||JSON.stringify(data)}`);return;}
-      const raw = data.content?.find(b=>b.type==="text")?.text || "";
-      const match = raw.match(/\{[\s\S]*\}/);
-      if (!match) { setError("Respuesta inválida. Inténtalo de nuevo."); return; }
-      // Escapa saltos de línea/tabuladores reales DENTRO de strings (JSON no los admite,
-      // p. ej. en haiku_corregido) y descarta el resto de caracteres de control.
-      const sanea = (s) => {
-        let out = "", inStr = false, esc = false;
-        for (const ch of s) {
-          if (inStr) {
-            if (esc) { out += ch; esc = false; continue; }
-            if (ch === "\\") { out += ch; esc = true; continue; }
-            if (ch === '"') { out += ch; inStr = false; continue; }
-            if (ch === "\n") { out += "\\n"; continue; }
-            if (ch === "\r") { continue; }
-            if (ch === "\t") { out += "\\t"; continue; }
-            if (/[\u0000-\u001F\u007F]/.test(ch)) continue;
-            out += ch;
-          } else {
-            if (ch === '"') inStr = true;
-            if (/[\u0000-\u001F\u007F]/.test(ch) && !"\n\r\t".includes(ch)) continue;
-            out += ch;
-          }
+      // Sílabas, sinalefas, acento final y rima: las calcula el código, no el modelo.
+      const an = analizarHaiku(texto);
+      const parsed = await llamarModelo({
+        system: SYSTEM_PROMPT,
+        max_tokens: 1500,
+        user: `Analiza este haiku:\n\n${texto}\n\nDATOS CALCULADOS POR EL PROGRAMA (exactos; no los recalcules ni los contradigas):\n${datosParaModelo(an)}`,
+      });
+      if (!parsed) { setError("El maestro no pudo completar el análisis. Inténtalo de nuevo."); return; }
+
+      const kigo = Boolean(parsed.tiene_kigo), yo = Boolean(parsed.tiene_yo), metafora = Boolean(parsed.tiene_metafora);
+
+      // La versión sugerida se verifica por código; si no mide 5-7-5 o rima, se pide otra (máx. 2 veces).
+      let corregido = textoCorregido(parsed.haiku_corregido);
+      if (corregido) {
+        let v = validaCorreccion(corregido);
+        for (let i = 0; i < 2 && !v.ok; i++) {
+          try {
+            const r = await llamarModelo({
+              system: SYSTEM_REINTENTO,
+              max_tokens: 300,
+              user: `Haiku original:\n${texto}\n\nTu propuesta anterior no cumple:\n${corregido}\n\nProblemas (cálculo exacto del programa):\n${v.problemas.map(x => "- " + x).join("\n")}\n\nEscribe otra versión que conserve la imagen del original: 5-7-5 contando sinalefas (vocal final + vocal inicial = una sola sílaba; verso agudo +1, esdrújulo −1), sin rima entre versos, sin primera persona, con kigo y sin metáforas.`,
+            });
+            const nuevo = textoCorregido(r?.haiku_corregido);
+            if (!nuevo) break;
+            corregido = nuevo;
+            v = validaCorreccion(nuevo);
+          } catch { break; }
         }
-        return out;
-      };
-      let json = sanea(match[0]).replace(/,\s*([}\]])/g, "$1");
-      // Intenta parsear; si falla, repara el JSON truncado
-      let parsed;
-      try { parsed = JSON.parse(json); }
-      catch {
-        // Cierra strings abiertas, arrays y objetos incompletos
-        let repair = json;
-        // Cuenta llaves y corchetes abiertos
-        let braces = 0, brackets = 0, inStr = false, esc = false;
-        for (let i = 0; i < repair.length; i++) {
-          const ch = repair[i];
-          if (esc) { esc = false; continue; }
-          if (ch === "\\") { esc = true; continue; }
-          if (ch === '"' && !esc) { inStr = !inStr; continue; }
-          if (!inStr) {
-            if (ch === "{") braces++;
-            else if (ch === "}") braces--;
-            else if (ch === "[") brackets++;
-            else if (ch === "]") brackets--;
-          }
-        }
-        // Si estábamos dentro de un string, ciérralo
-        if (inStr) repair += '"';
-        // Elimina comas finales que quedaron al cortar
-        repair = repair.replace(/,\s*$/, "");
-        // Cierra arrays y objetos abiertos
-        while (brackets > 0) { repair += "]"; brackets--; }
-        while (braces > 0)   { repair += "}"; braces--; }
-        try { parsed = JSON.parse(repair); }
-        catch (e2) { setError("El maestro no pudo completar el análisis. Inténtalo de nuevo."); return; }
+        if (!v.ok) corregido = null;
       }
-      const str = v => (typeof v === "string" ? v : typeof v === "object" && v !== null ? JSON.stringify(v) : String(v ?? ""));
-      const normaliza = (p) => {
-        // Normaliza array de versos
-        let versos = p.versos;
-        if (!Array.isArray(versos)) {
-          if (versos && typeof versos === "object")
-            versos = [versos.verso1, versos.verso2, versos.verso3].filter(Boolean);
-          else if (p.verso1 || p.verso2)
-            versos = [p.verso1, p.verso2, p.verso3].filter(Boolean);
-          else versos = [];
-        }
-        // Sanitiza cada verso: garantiza que todos los campos son primitivos
-        versos = versos.map(v => {
-          if (!v || typeof v !== "object") return { verso:"", silabas_contadas:0, silabas_esperadas:5, correcto:false, desglose:"" };
-          return {
-            verso:            str(v.verso),
-            silabas_contadas: Number(v.silabas_contadas) || 0,
-            silabas_esperadas:Number(v.silabas_esperadas) || 5,
-            correcto:         Boolean(v.correcto),
-            desglose:         str(v.desglose ?? v.proceso ?? v.verificacion ?? ""),
-          };
-        });
-        // Sanitiza arrays de strings
-        const toStrArr = a => Array.isArray(a) ? a.map(str) : (a ? [str(a)] : []);
-        return {
-          puntuacion:      Number(p.puntuacion) || 0,
-          versos,
-          aciertos:        toStrArr(p.aciertos),
-          errores:         toStrArr(p.errores),
-          tiene_kigo:      Boolean(p.tiene_kigo),
-          tiene_yo:        Boolean(p.tiene_yo),
-          tiene_rima:      Boolean(p.tiene_rima),
-          tiene_metafora:  Boolean(p.tiene_metafora),
-          nota_maestro:    str(p.nota_maestro ?? ""),
-          haiku_corregido: (() => {
-            const h = p.haiku_corregido;
-            if (!h) return null;
-            if (typeof h === "string") return h;
-            if (typeof h === "object") {
-              // Intenta campos comunes con el texto completo
-              if (h.texto)  return str(h.texto);
-              if (h.haiku)  return str(h.haiku);
-              if (h.result) return str(h.result);
-              // Si tiene verso1/verso2/verso3 los une
-              if (h.verso1 || h.verso2 || h.verso3)
-                return [h.verso1, h.verso2, h.verso3].filter(Boolean).map(str).join("\n");
-              // Si tiene v1/v2/v3
-              if (h.v1 || h.v2 || h.v3)
-                return [h.v1, h.v2, h.v3].filter(Boolean).map(str).join("\n");
-            }
-            return null;
-          })(),
-        };
-      };
-      setResultado(normaliza(parsed));
+
+      const met = resumenMetrico(an);
+      const literario = a => toStrArr(a).filter(x => !SOBRE_METRICA.test(x));
+      setResultado({
+        puntuacion: puntuar(an, { kigo, yo, metafora }),
+        versos: an.versos.map(v => ({ verso: v.verso, silabas_contadas: v.cuenta, silabas_esperadas: v.esperadas, correcto: v.correcto, desglose: v.desglose })),
+        aciertos: [...met.aciertos, ...literario(parsed.aciertos)],
+        errores:  [...met.errores,  ...literario(parsed.errores)],
+        tiene_kigo: kigo,
+        tiene_yo: yo,
+        tiene_rima: an.rimas.length > 0,
+        tiene_metafora: metafora,
+        nota_maestro: str(parsed.nota_maestro ?? ""),
+        haiku_corregido: corregido,
+      });
     }catch(e){setError(`Error: ${e.message}`);}
     finally{setCargando(false);}
   };
